@@ -1,0 +1,27 @@
+# FastAPI and web server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-multipart>=0.0.6
+
+# HTTP client for vLLM backend
+httpx>=0.26.0
+
+# AWS SDK for DynamoDB and other services
+boto3>=1.34.0
+
+# OpenSearch for RAG vector search
+opensearch-py>=2.4.0
+
+# Embedding model (lightweight ONNX-based)
+fastembed>=0.3.0
+
+# PDF text extraction
+pypdf>=3.17.0
+
+# YAML frontmatter parsing for markdown docs
+pyyaml>=6.0
+
+# Utilities
+python-dotenv>=1.0.0
