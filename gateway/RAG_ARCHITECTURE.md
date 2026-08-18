@@ -30,7 +30,7 @@ flowchart TD
     guard -->|ALLOW| base["Inject build_base_system_prompt()"]
     base --> gate{"is_chitchat?"}
     gate -->|yes| budget
-    gate -->|no| rewrite["Rewrite query<br/>(gpt-4o-mini,<br/>cached)"]
+    gate -->|no| rewrite["Rewrite query<br/>(LangChain gpt-4o-mini,<br/>cached)"]
     rewrite --> embed["embed_query<br/>(cached)"]
     embed --> hybrid["Hybrid search:<br/>BM25 + kNN -> RRF<br/>(filters applied)"]
     hybrid --> rerank["Cross-encoder rerank<br/>top-K from pool of 20"]
@@ -86,9 +86,9 @@ flowchart TD
 - **Deep dive**: [`gateway/docs/retrieval-gating.md`](docs/retrieval-gating.md)
 
 ### Conversational query rewriting
-- **What**: gpt-4o-mini (same OpenAI key as the input guard) rewrites follow-ups into standalone search queries. LRU keyed on `(session_id, history_length, latest_message)`. Falls back to the literal message.
+- **What**: gpt-4o-mini via LangChain LCEL (`ChatPromptTemplate | ChatOpenAI | StrOutputParser`; same OpenAI key as the input guard) rewrites follow-ups into standalone search queries. LRU keyed on `(session_id, history_length, latest_message)`. Falls back to the literal message.
 - **When**: prior history, chit-chat gate did not skip, and `OPENAI_API_KEY` is set.
-- **Code**: `rewrite_query`, `_QUERY_REWRITE_SYSTEM_PROMPT`, `_query_rewrite_cache` in [`gateway/app/rag.py`](app/rag.py).
+- **Code**: `rewrite_query`, `_get_rewrite_chain`, `_QUERY_REWRITE_SYSTEM_PROMPT`, `_query_rewrite_cache` in [`gateway/app/rag.py`](app/rag.py).
 - **Deep dive**: [`gateway/docs/query-rewriting.md`](docs/query-rewriting.md)
 
 ### Token budgeting
@@ -181,7 +181,7 @@ Algorithmic / prompt-coupled / pod-local memory bounds.
 - **Schema / chunking / embedding changes need a reindex.** Delete the OpenSearch index, restart the gateway (`create_index_if_not_exists`), re-upload with [`scripts/upload-docs.sh`](../scripts/upload-docs.sh).
 - **Reranker + embedder are pre-downloaded** in [`gateway/Dockerfile`](Dockerfile) and pre-loaded in the lifespan handler.
 - **Streaming** is per-request `"stream": true`. No extra knobs.
-- **Guard + rewrite** share `OPENAI_API_KEY` / gpt-4o-mini (sequential POSTs, not vLLM). Empty key skips both.
+- **Guard + rewrite** share `OPENAI_API_KEY` / gpt-4o-mini (not vLLM). Guard is a raw httpx POST; rewrite is a LangChain chain. Empty key skips both.
 
 ---
 

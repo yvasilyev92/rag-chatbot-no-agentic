@@ -834,11 +834,7 @@ async def session_chat_completion(
                     # whenever there's prior history to anchor against.
                     # Falls back to user_query on any internal failure.
                     search_query = user_query
-                    if (
-                        latest_user_idx is not None
-                        and latest_user_idx > 0
-                        and openai_http_client is not None
-                    ):
+                    if latest_user_idx is not None and latest_user_idx > 0:
                         prior_msgs = provisional_messages[:latest_user_idx]
                         prior_msgs = [
                             m for m in prior_msgs if m.role in ("user", "assistant")
@@ -849,7 +845,6 @@ async def session_chat_completion(
                         ]
                         if trimmed_history:
                             search_query = await rewrite_query(
-                                http_client=openai_http_client,
                                 history_messages=trimmed_history,
                                 latest_message=user_query,
                                 session_id=session_id,

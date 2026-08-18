@@ -1,6 +1,6 @@
 # Conversational query rewriting
 
-Follow-ups like `"tell me more about that"` have no keywords. Before search, [`rewrite_query`](../app/rag.py) asks gpt-4o-mini (same OpenAI client/key as the input guard, not vLLM) to turn the latest message plus recent history into a standalone query.
+Follow-ups like `"tell me more about that"` have no keywords. Before search, [`rewrite_query`](../app/rag.py) runs a small LangChain chain (`ChatPromptTemplate | ChatOpenAI | StrOutputParser`) against gpt-4o-mini — same `OPENAI_API_KEY` as the input guard, not vLLM — to turn the latest message plus recent history into a standalone query.
 
 The rewrite is **search-only**. DynamoDB, the chat LLM, and the stored transcript all keep the original message.
 

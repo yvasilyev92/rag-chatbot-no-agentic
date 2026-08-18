@@ -12,16 +12,13 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, defaultdict
-from typing import List, Optional, Dict, Any, Tuple, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, Tuple
 
 from opensearchpy import OpenSearch, RequestsHttpConnection, RequestsAWSV4SignerAuth
 import boto3
 
-if TYPE_CHECKING:
-    import httpx
-
 from .config import get_settings
-from .guard import OPENAI_CHAT_URL, canned_refusal
+from .guard import canned_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +114,13 @@ def rerank(
 #
 # Why this exists: when a user asks "tell me more about that" or "what
 # about ice instead?", embedding those literal tokens is useless. We run
-# a cheap gpt-4o-mini call (same OpenAI path as the input guard) that
-# rewrites the latest user message into a standalone search query, using
-# the last few turns as context. The rewritten query is used ONLY for
-# retrieval; the main chat call still receives the user's original
-# message unchanged and still runs on vLLM.
+# a cheap gpt-4o-mini LCEL chain (ChatPromptTemplate | ChatOpenAI |
+# StrOutputParser) that rewrites the latest user message into a standalone
+# search query, using the last few turns as context. Same OPENAI_API_KEY
+# as the input guard, but this path goes through LangChain rather than a
+# raw httpx POST. The rewritten query is used ONLY for retrieval; the
+# main chat call still receives the user's original message unchanged
+# and still runs on vLLM.
 
 # Instruction for the rewriter. Short and example-driven.
 _QUERY_REWRITE_SYSTEM_PROMPT = (
@@ -245,8 +244,46 @@ def _build_rewrite_user_prompt(
     return "\n".join(lines)
 
 
+# Lazy singleton so we reuse ChatOpenAI's HTTP client across requests.
+# Recreated only if the API key changes (tests / config reload).
+_rewrite_chain: Optional[Any] = None
+_rewrite_chain_api_key: Optional[str] = None
+
+
+def _get_rewrite_chain(openai_api_key: str) -> Any:
+    """
+    Build (or reuse) the LCEL rewrite chain:
+
+        ChatPromptTemplate | ChatOpenAI | StrOutputParser
+    """
+    global _rewrite_chain, _rewrite_chain_api_key
+    if _rewrite_chain is not None and _rewrite_chain_api_key == openai_api_key:
+        return _rewrite_chain
+
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_openai import ChatOpenAI
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", _QUERY_REWRITE_SYSTEM_PROMPT),
+            ("human", "{user_prompt}"),
+        ]
+    )
+    llm = ChatOpenAI(
+        model=QUERY_REWRITE_MODEL,
+        temperature=QUERY_REWRITE_TEMPERATURE,
+        max_tokens=QUERY_REWRITE_MAX_TOKENS,
+        timeout=QUERY_REWRITE_TIMEOUT_SECONDS,
+        max_retries=0,
+        api_key=openai_api_key,
+    )
+    _rewrite_chain = prompt | llm | StrOutputParser()
+    _rewrite_chain_api_key = openai_api_key
+    return _rewrite_chain
+
+
 async def rewrite_query(
-    http_client: "httpx.AsyncClient",
     history_messages: List[Dict[str, str]],
     latest_message: str,
     *,
@@ -256,13 +293,12 @@ async def rewrite_query(
     """
     Rewrite `latest_message` into a standalone search query using prior turns.
 
-    Uses gpt-4o-mini via the OpenAI API so rewrite does not compete with
-    chat on the vLLM GPU. Falls back to `latest_message` whenever the
-    rewrite is unhelpful or fails: no API key, empty history, backend
-    error, degenerate output, timeout, etc.
+    Uses gpt-4o-mini via LangChain so rewrite does not compete with chat on
+    the vLLM GPU. Falls back to `latest_message` whenever the rewrite is
+    unhelpful or fails: no API key, empty history, backend error,
+    degenerate output, timeout, etc.
 
     Args:
-        http_client: shared httpx.AsyncClient (no vLLM base_url required)
         history_messages: trimmed prior turns, oldest first, each
             {"role": "user"|"assistant", "content": str}. Should NOT
             include the latest user message itself.
@@ -289,39 +325,15 @@ async def rewrite_query(
             return cached
 
     user_prompt = _build_rewrite_user_prompt(history_messages, latest_message)
-    payload = {
-        "model": QUERY_REWRITE_MODEL,
-        "messages": [
-            {"role": "system", "content": _QUERY_REWRITE_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
-        "max_tokens": QUERY_REWRITE_MAX_TOKENS,
-        "temperature": QUERY_REWRITE_TEMPERATURE,
-    }
-    headers = {
-        "Authorization": f"Bearer {openai_api_key}",
-        "Content-Type": "application/json",
-    }
 
     try:
-        response = await http_client.post(
-            OPENAI_CHAT_URL,
-            json=payload,
-            headers=headers,
-            timeout=QUERY_REWRITE_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        body = response.json()
-        raw = (
-            body.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content", "")
-        )
+        chain = _get_rewrite_chain(openai_api_key)
+        raw = await chain.ainvoke({"user_prompt": user_prompt})
     except Exception as e:
         logger.warning(f"Query rewrite failed, using literal message: {e}")
         return latest_message
 
-    rewritten = _clean_rewrite_output(raw, latest_message)
+    rewritten = _clean_rewrite_output(raw or "", latest_message)
 
     if cache_key is not None:
         _rewrite_cache_set(cache_key, rewritten, QUERY_REWRITE_CACHE_SIZE)

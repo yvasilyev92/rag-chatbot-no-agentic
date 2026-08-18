@@ -1,12 +1,9 @@
-"""Tests for query-rewrite sanitization helpers and the OpenAI rewrite call."""
+"""Tests for query-rewrite sanitization helpers and the LangChain rewrite call."""
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-import httpx
-
-from app.guard import OPENAI_CHAT_URL
+import app.rag as rag_mod
 from app.rag import (
-    QUERY_REWRITE_MODEL,
     _build_rewrite_user_prompt,
     _clean_rewrite_output,
     _query_rewrite_cache,
@@ -18,20 +15,17 @@ from app.rag import (
 def _clear_rewrite_cache():
     with _query_rewrite_cache_lock:
         _query_rewrite_cache.clear()
+    rag_mod._rewrite_chain = None
+    rag_mod._rewrite_chain_api_key = None
 
 
-def _mock_response(content: str, status_code: int = 200):
-    response = MagicMock()
-    response.status_code = status_code
-    response.raise_for_status = MagicMock()
-    if status_code >= 400:
-        response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "err", request=MagicMock(), response=response
-        )
-    response.json.return_value = {
-        "choices": [{"message": {"content": content}}]
-    }
-    return response
+def _mock_chain(content: str = "", side_effect=None) -> MagicMock:
+    chain = MagicMock()
+    if side_effect is not None:
+        chain.ainvoke = AsyncMock(side_effect=side_effect)
+    else:
+        chain.ainvoke = AsyncMock(return_value=content)
+    return chain
 
 
 _HISTORY = [
@@ -89,57 +83,53 @@ class TestRewriteQuery:
     def setup_method(self):
         _clear_rewrite_cache()
 
-    def test_empty_history_skips_openai(self):
-        client = AsyncMock()
+    def test_empty_history_skips_chain(self, monkeypatch):
+        getter = MagicMock()
+        monkeypatch.setattr(rag_mod, "_get_rewrite_chain", getter)
         result = asyncio.run(
             rewrite_query(
-                client,
                 [],
                 "What are relics?",
                 openai_api_key="sk-test",
             )
         )
         assert result == "What are relics?"
-        client.post.assert_not_called()
+        getter.assert_not_called()
 
-    def test_missing_key_skips_openai(self):
-        client = AsyncMock()
+    def test_missing_key_skips_chain(self, monkeypatch):
+        getter = MagicMock()
+        monkeypatch.setattr(rag_mod, "_get_rewrite_chain", getter)
         result = asyncio.run(
             rewrite_query(
-                client,
                 _HISTORY,
                 "tell me more about that",
                 openai_api_key="",
             )
         )
         assert result == "tell me more about that"
-        client.post.assert_not_called()
+        getter.assert_not_called()
 
-    def test_rewrites_from_openai(self):
-        client = AsyncMock()
-        client.post = AsyncMock(
-            return_value=_mock_response("Soulfire Necklace details")
-        )
+    def test_rewrites_from_chain(self, monkeypatch):
+        chain = _mock_chain("Soulfire Necklace details")
+        monkeypatch.setattr(rag_mod, "_get_rewrite_chain", lambda api_key: chain)
         result = asyncio.run(
             rewrite_query(
-                client,
                 _HISTORY,
                 "tell me more about that",
                 openai_api_key="sk-test",
             )
         )
         assert result == "Soulfire Necklace details"
-        client.post.assert_called_once()
-        args, kwargs = client.post.call_args
-        assert args[0] == OPENAI_CHAT_URL
-        assert kwargs["json"]["model"] == QUERY_REWRITE_MODEL
+        chain.ainvoke.assert_called_once()
+        payload = chain.ainvoke.call_args.args[0]
+        assert "tell me more about that" in payload["user_prompt"]
+        assert "Soulfire Necklace" in payload["user_prompt"]
 
-    def test_timeout_falls_back_to_original(self):
-        client = AsyncMock()
-        client.post = AsyncMock(side_effect=httpx.TimeoutException("slow"))
+    def test_timeout_falls_back_to_original(self, monkeypatch):
+        chain = _mock_chain(side_effect=TimeoutError("slow"))
+        monkeypatch.setattr(rag_mod, "_get_rewrite_chain", lambda api_key: chain)
         result = asyncio.run(
             rewrite_query(
-                client,
                 _HISTORY,
                 "tell me more about that",
                 openai_api_key="sk-test",
@@ -147,14 +137,11 @@ class TestRewriteQuery:
         )
         assert result == "tell me more about that"
 
-    def test_degenerate_output_falls_back_to_original(self):
-        client = AsyncMock()
-        client.post = AsyncMock(
-            return_value=_mock_response("Sure, here is the answer")
-        )
+    def test_degenerate_output_falls_back_to_original(self, monkeypatch):
+        chain = _mock_chain("Sure, here is the answer")
+        monkeypatch.setattr(rag_mod, "_get_rewrite_chain", lambda api_key: chain)
         result = asyncio.run(
             rewrite_query(
-                client,
                 _HISTORY,
                 "tell me more about that",
                 openai_api_key="sk-test",
@@ -162,18 +149,31 @@ class TestRewriteQuery:
         )
         assert result == "tell me more about that"
 
-    def test_cache_hit_skips_second_call(self):
-        client = AsyncMock()
-        client.post = AsyncMock(
-            return_value=_mock_response("Soulfire Necklace details")
-        )
+    def test_cache_hit_skips_second_call(self, monkeypatch):
+        chain = _mock_chain("Soulfire Necklace details")
+        monkeypatch.setattr(rag_mod, "_get_rewrite_chain", lambda api_key: chain)
         kwargs = dict(
             history_messages=_HISTORY,
             latest_message="tell me more about that",
             session_id="sess-1",
             openai_api_key="sk-test",
         )
-        first = asyncio.run(rewrite_query(client, **kwargs))
-        second = asyncio.run(rewrite_query(client, **kwargs))
+        first = asyncio.run(rewrite_query(**kwargs))
+        second = asyncio.run(rewrite_query(**kwargs))
         assert first == second == "Soulfire Necklace details"
-        assert client.post.call_count == 1
+        assert chain.ainvoke.call_count == 1
+
+
+class TestGetRewriteChain:
+    def setup_method(self):
+        _clear_rewrite_cache()
+
+    def test_builds_runnable_and_reuses_for_same_key(self):
+        chain = rag_mod._get_rewrite_chain("sk-test")
+        assert hasattr(chain, "ainvoke")
+        assert rag_mod._get_rewrite_chain("sk-test") is chain
+
+    def test_rebuilds_when_api_key_changes(self):
+        first = rag_mod._get_rewrite_chain("sk-one")
+        second = rag_mod._get_rewrite_chain("sk-two")
+        assert first is not second
