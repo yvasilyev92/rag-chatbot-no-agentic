@@ -260,14 +260,14 @@ aws dynamodb delete-item --table-name vllm-documents \
 # Delete the vllm namespace (keep the EKS cluster). Point kubeconfig at the
 # intended cluster first — do not `kubectl delete -f kubernetes/` (PLACEHOLDER_*
 # manifests and the wrong context are both easy mistakes).
-#   aws eks update-kubeconfig --name vllm-cluster --region us-east-1
+#   aws eks update-kubeconfig --name vllm-cluster --region "$AWS_REGION"
 kubectl delete namespace vllm
 
 # Delete entire cluster and resources (interactive)
 ./scripts/cleanup.sh
 
 # Manual cleanup:
-eksctl delete cluster --name vllm-cluster --region us-east-1
+eksctl delete cluster --name vllm-cluster --region "$AWS_REGION"
 aws dynamodb delete-table --table-name vllm-conversations
 aws ecr delete-repository --repository-name vllm-server --force
 aws ecr delete-repository --repository-name vllm-gateway --force

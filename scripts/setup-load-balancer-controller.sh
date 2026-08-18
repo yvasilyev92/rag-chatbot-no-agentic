@@ -11,7 +11,7 @@
 # missing.
 #
 # Prerequisites:
-#   - EKS cluster (eksctl create cluster -f eks/cluster.yaml)
+#   - EKS cluster (./scripts/create-cluster.sh)
 #   - eksctl, kubectl, curl, python3, AWS CLI
 #
 # Usage:

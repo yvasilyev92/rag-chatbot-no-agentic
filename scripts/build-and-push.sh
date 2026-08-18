@@ -122,7 +122,7 @@ if [ "$BUILD_TARGET" = "all" ] || [ "$BUILD_TARGET" = "gateway" ]; then
 fi
 echo ""
 echo "Next steps:"
-echo "1. Create EKS cluster: eksctl create cluster -f eks/cluster.yaml"
+echo "1. Create EKS cluster: ./scripts/create-cluster.sh"
 echo "2. Setup DynamoDB: ./scripts/setup-dynamodb.sh && ./scripts/setup-documents-table.sh"
 echo "3. Setup OpenSearch: ./scripts/setup-opensearch.sh"
 echo "4. Setup IAM for gateway: ./scripts/setup-iam-gateway.sh"

@@ -31,7 +31,7 @@
 #   8. Retrieves the Gateway LoadBalancer URL
 #
 # Prerequisites:
-#   - EKS cluster created: eksctl create cluster -f eks/cluster.yaml
+#   - EKS cluster created: ./scripts/create-cluster.sh
 #   - DynamoDB tables created: ./scripts/setup-dynamodb.sh + ./scripts/setup-documents-table.sh
 #   - OpenSearch domain created: ./scripts/setup-opensearch.sh
 #     (set OPENSEARCH_ENDPOINT in .env after setup-opensearch.sh)
