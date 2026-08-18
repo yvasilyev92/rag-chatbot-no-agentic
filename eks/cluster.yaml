@@ -1,0 +1,100 @@
+# EKS Cluster Configuration for eksctl
+# Usage: ./scripts/create-cluster.sh
+#        ./scripts/create-cluster.sh nodegroup --include=gpu-nodes
+#
+# Do not run `eksctl create cluster -f eks/cluster.yaml` directly — region is
+# PLACEHOLDER_AWS_REGION until create-cluster.sh substitutes AWS_REGION from
+# .env. GPU instanceType must also appear in kubernetes/deployment.yaml
+# nodeAffinity.
+
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: vllm-cluster
+  region: PLACEHOLDER_AWS_REGION
+  version: "1.33"
+
+# IAM configuration
+iam:
+  withOIDC: true
+  serviceAccounts:
+    # IRSA for NLB TLS annotations on gateway-service.
+    # Controller pods are installed by scripts/setup-load-balancer-controller.sh
+    # (pinned upstream YAML). deploy.sh invokes that script if the controller is missing.
+    - metadata:
+        name: aws-load-balancer-controller
+        namespace: kube-system
+      wellKnownPolicies:
+        awsLoadBalancerController: true
+
+# Node groups configuration
+managedNodeGroups:
+  # GPU node group for vLLM workloads
+  - name: gpu-nodes
+    # ============================================
+    # GPU INSTANCE TYPE - CHANGE THIS AS NEEDED
+    # ============================================
+    # Options (single GPU, no tensor parallelism):
+    #   - g5.xlarge    (1x A10G 24GB)  - Models up to 14B (~$1/hr)
+    #   - g5.2xlarge   (1x A10G 24GB)  - Models up to 14B, more CPU
+    #   - p3.2xlarge   (1x V100 16GB)  - Budget, models up to 7B
+    #   - p4d.24xlarge (8x A100 80GB)  - Large models (32B+) (~$32/hr)
+    #
+    # For Llama-3.1-8B (~16GB), g5.xlarge is sufficient
+    # For larger models (32B+), use p4d.24xlarge
+    instanceType: g5.xlarge
+
+    # Number of GPU nodes
+    desiredCapacity: 1
+    minSize: 1
+    maxSize: 3
+
+    # Use spot instances for cost savings (optional)
+    # WARNING: Spot instances can be interrupted
+    # spot: true
+
+    # EBS volume for model cache
+    volumeSize: 200
+    volumeType: gp3
+
+    # GPU-specific settings
+    labels:
+      role: gpu-worker
+      nvidia.com/gpu: "true"
+
+    # Taint GPU nodes so only GPU workloads are scheduled on them
+    taints:
+      - key: nvidia.com/gpu
+        value: "true"
+        effect: NoSchedule
+
+    # SSH access (optional - for debugging)
+    # ssh:
+    #   allow: true
+    #   publicKeyPath: ~/.ssh/id_rsa.pub
+
+  # CPU node group for the gateway (FastAPI + local embed/rerank models).
+  # t3.large (2 vCPU, 8Gi) holds one gateway pod (1Gi request / 2Gi limit)
+  # plus kube-system with headroom. Two nodes so two replicas can land
+  # without packing both onto one box. HPA max is 3 — match maxSize here.
+  - name: cpu-nodes
+    instanceType: t3.large
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    labels:
+      role: cpu-worker
+
+# Addons
+addons:
+  - name: vpc-cni
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+  - name: coredns
+  - name: kube-proxy
+  # Dynamic EBS volumes for the vLLM HuggingFace cache PVC
+  - name: aws-ebs-csi-driver
+    wellKnownPolicies:
+      ebsCSIController: true
+  # NVIDIA device plugin is installed by scripts/deploy.sh (kubectl apply)
