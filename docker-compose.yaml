@@ -1,0 +1,91 @@
+# Local development stack: vLLM (GPU) + Gateway (CPU).
+#
+# Usage:
+#   docker compose up                          # both services
+#   docker compose up gateway                  # gateway only (vLLM still required as a dependency)
+#
+# Notes:
+# - Requires an NVIDIA GPU + nvidia-container-toolkit for the vllm-server service.
+# - The gateway expects DynamoDB + OpenSearch reachable via your AWS credentials.
+#   For purely-local testing without AWS, set RAG_ENABLED=false and
+#   provide local mocks (out of scope here).
+# - The `version:` top-level key is intentionally omitted -- modern Docker
+#   Compose ignores it.
+
+services:
+  vllm-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_NAME=${MODEL_NAME:-meta-llama/Llama-3.1-8B-Instruct}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-4096}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+      - HF_TOKEN=${HF_TOKEN:-}
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 30s
+      start_period: 300s
+      retries: 3
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    depends_on:
+      vllm-server:
+        condition: service_healthy
+    environment:
+      # Core
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - DYNAMODB_TABLE=${DYNAMODB_TABLE:-vllm-conversations}
+      - VLLM_INTERNAL_URL=http://vllm-server:8000
+      - VLLM_API_KEY=${VLLM_API_KEY:-}
+      - SESSION_TTL_HOURS=${SESSION_TTL_HOURS:-24}
+      - MAX_HISTORY_TOKENS=${MAX_HISTORY_TOKENS:-3000}
+      - HOST=0.0.0.0
+      - PORT=8080
+      # Token budget (must equal MAX_MODEL_LEN of vllm-server)
+      - MODEL_CONTEXT_TOKENS=${MODEL_CONTEXT_TOKENS:-4096}
+      # RAG (set RAG_ENABLED=false locally if you don't want to talk to OpenSearch)
+      - OPENSEARCH_ENDPOINT=${OPENSEARCH_ENDPOINT:-}
+      - OPENSEARCH_INDEX=${OPENSEARCH_INDEX:-vllm-documents}
+      - RAG_ENABLED=${RAG_ENABLED:-true}
+      - RAG_TOP_K=${RAG_TOP_K:-5}
+      - RAG_MIN_SCORE=${RAG_MIN_SCORE:-0.35}
+      - CHUNK_SIZE=${CHUNK_SIZE:-2000}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-200}
+      - INPUT_GUARD_ENABLED=${INPUT_GUARD_ENABLED:-true}
+      - DESIRED_RAG_TOPIC=${DESIRED_RAG_TOPIC:-Desired RAG Topic}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # AWS credentials (DynamoDB + OpenSearch). Use SSO/keys/vault as you see fit.
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+    restart: unless-stopped
+    healthcheck:
+      # python:3.11-slim has no curl; httpx is in gateway/requirements.txt
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8080/live').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  huggingface-cache:
