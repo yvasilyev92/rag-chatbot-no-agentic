@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-hf-cache
+  namespace: vllm
+  labels:
+    app: vllm
+spec:
+  # RWO: vLLM is 1 replica. Do not scale vllm-server above 1 without a
+  # second PVC (the volume cannot attach to two GPU nodes at once).
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi

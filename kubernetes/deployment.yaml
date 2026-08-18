@@ -1,0 +1,144 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-server
+  namespace: vllm
+  labels:
+    app: vllm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+    spec:
+      containers:
+        - name: vllm
+          # Image URI is rewritten by scripts/deploy.sh from your AWS_ACCOUNT_ID + AWS_REGION.
+          # Do NOT commit a real account ID here.
+          image: PLACEHOLDER_AWS_ACCOUNT_ID.dkr.ecr.PLACEHOLDER_REGION.amazonaws.com/vllm-server:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              protocol: TCP
+          env:
+            # Model configuration from ConfigMap
+            - name: MODEL_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: MODEL_NAME
+            - name: MAX_MODEL_LEN
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: MAX_MODEL_LEN
+            - name: GPU_MEMORY_UTILIZATION
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: GPU_MEMORY_UTILIZATION
+            - name: HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: HOST
+            - name: PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: vllm-config
+                  key: PORT
+            # HuggingFace token from Secret
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vllm-secrets
+                  key: HF_TOKEN
+                  optional: true
+            # API Key for authentication
+            - name: VLLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vllm-secrets
+                  key: VLLM_API_KEY
+          resources:
+            limits:
+              # Request 1 GPU (no tensor parallelism)
+              nvidia.com/gpu: "1"
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "12Gi"
+              cpu: "2"
+          # Liveness probe - checks if server is running
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # Readiness probe - checks if server is ready to accept traffic
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 300
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup probe - allows long startup time for model loading
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 20
+          volumeMounts:
+            - name: cache-volume
+              mountPath: /root/.cache/huggingface
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        # HuggingFace model cache (EBS via EBS CSI). Survives pod reschedule
+        # on the same AZ; vLLM replicas must stay at 1 (RWO).
+        - name: cache-volume
+          persistentVolumeClaim:
+            claimName: vllm-hf-cache
+        # Shared memory for PyTorch DataLoader
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+      # Tolerate GPU node taints
+      tolerations:
+        - key: "nvidia.com/gpu"
+          operator: "Exists"
+          effect: "NoSchedule"
+      # Prefer scheduling on GPU nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: "node.kubernetes.io/instance-type"
+                    operator: In
+                    values:
+                      # Add your GPU instance types here
+                      - p4d.24xlarge
+                      - p3.2xlarge
+                      - p3.8xlarge
+                      - p3.16xlarge
+                      - g5.xlarge
+                      - g5.2xlarge
+                      - g5.4xlarge
+                      - g5.8xlarge
+                      - g5.12xlarge
+                      - g5.16xlarge
+                      - g5.24xlarge
+                      - g5.48xlarge

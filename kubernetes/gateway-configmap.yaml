@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: vllm
+  labels:
+    app: gateway
+data:
+  # ============================================================================
+  # Core infrastructure
+  # ============================================================================
+
+  # AWS region for DynamoDB and OpenSearch
+  AWS_REGION: "us-east-1"
+
+  # DynamoDB table for conversation storage
+  DYNAMODB_TABLE: "vllm-conversations"
+
+  # Internal vLLM service URL (in-cluster ClusterIP)
+  VLLM_INTERNAL_URL: "http://vllm-service:80"
+
+  # Conversations TTL in hours (older sessions are auto-expired by DDB)
+  SESSION_TTL_HOURS: "24"
+
+  # Hard upper bound on history tokens (independent safety floor; the per-turn
+  # budgeter trims to a smaller value when needed).
+  MAX_HISTORY_TOKENS: "3000"
+
+  # Gateway HTTP server
+  HOST: "0.0.0.0"
+  PORT: "8080"
+
+  # ============================================================================
+  # Token budget
+  # ----------------------------------------------------------------------------
+  # MODEL_CONTEXT_TOKENS MUST equal vLLM's --max-model-len (set in
+  # kubernetes/configmap.yaml -> MAX_MODEL_LEN). When you swap models you
+  # change both in lockstep. The code default also matches 4096 so a
+  # missing override fails safe instead of silently truncating.
+  #
+  # RESERVED_COMPLETION_TOKENS (512) and RAG_MAX_CONTEXT_TOKENS (2500) are
+  # module-level constants in gateway/app/main.py -- defensive ceilings the
+  # budgeter already auto-bounds, no real ops use case for tuning.
+  # ============================================================================
+  MODEL_CONTEXT_TOKENS: "4096"
+
+  # ============================================================================
+  # RAG: storage
+  # ----------------------------------------------------------------------------
+  # OpenSearch endpoint is rewritten by scripts/deploy.sh OR set manually after
+  # scripts/setup-opensearch.sh prints the new domain endpoint. Empty string
+  # disables RAG entirely.
+  # ============================================================================
+  OPENSEARCH_ENDPOINT: "PLACEHOLDER_OPENSEARCH_ENDPOINT"
+  OPENSEARCH_INDEX: "vllm-documents"
+
+  # ============================================================================
+  # RAG: master switch and chunking
+  # ----------------------------------------------------------------------------
+  # RAG_ENABLED is the *only* RAG pipeline kill-switch. Per-stage toggles
+  # (hybrid / rerank / query-rewrite / retrieval gate / cache) used to live
+  # here but each stage already has internal fallbacks, so the flags added
+  # optionality without making any incident faster to recover from.
+  #
+  # CHUNK_SIZE / CHUNK_OVERLAP apply to PDF/TXT and to markdown sections
+  # that exceed CHUNK_SIZE. Heading-sized markdown sections are left intact.
+  # ============================================================================
+  RAG_ENABLED: "true"
+  RAG_TOP_K: "5"
+  CHUNK_SIZE: "2000"
+  CHUNK_OVERLAP: "200"
+
+  # Post-rerank score floor (sigmoid-normalized to [0, 1]). The single dial
+  # operators turn after seeing bad results in prod logs.
+  RAG_MIN_SCORE: "0.35"
+
+  # gpt-4o-mini input guard + query rewrite. Requires OPENAI_API_KEY in
+  # vllm-secrets. Missing key skips both (fail-open / literal search query).
+  INPUT_GUARD_ENABLED: "true"
+
+  # Domain name interpolated into the chatbot persona, scope rules, and
+  # canned refusal. deploy.sh substitutes PLACEHOLDER_DESIRED_RAG_TOPIC
+  # from DESIRED_RAG_TOPIC in .env (default: Desired RAG Topic).
+  DESIRED_RAG_TOPIC: "PLACEHOLDER_DESIRED_RAG_TOPIC"
+
+  # ============================================================================
+  # NOTE: Internal tunables that used to be env vars are now module-level
+  # constants in the gateway code, not env vars:
+  #   - RESERVED_COMPLETION_TOKENS, RAG_MAX_CONTEXT_TOKENS,
+  #     SYSTEM_PROMPT_OVERHEAD_TOKENS                            (main.py)
+  #   - RERANK_MODEL_NAME, HYBRID_CANDIDATE_POOL, RRF_K,
+  #     RERANK_POOL, QUERY_REWRITE_*, EMBEDDING_CACHE_SIZE,
+  #     SEARCH_CACHE_*                                           (rag.py)
+  # See gateway/app/config.py for the current list of overridable settings.
+  # ============================================================================

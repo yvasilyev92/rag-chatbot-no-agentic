@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-service
+  namespace: vllm
+  labels:
+    app: vllm
+  # NOTE: This service is now internal-only (ClusterIP)
+  # External access is through the gateway-service LoadBalancer
+spec:
+  # ClusterIP = internal only, accessible within the cluster
+  # The gateway service handles external traffic
+  type: ClusterIP
+  selector:
+    app: vllm
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

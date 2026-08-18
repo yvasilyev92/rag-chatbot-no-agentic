@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: vllm
+  labels:
+    app: gateway
+spec:
+  replicas: 2  # Multiple replicas for high availability
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      # IRSA ServiceAccount — not defined in this folder. Created by
+      # scripts/setup-iam-gateway.sh (DynamoDB + OpenSearch).
+      serviceAccountName: gateway-sa
+      
+      containers:
+        - name: gateway
+          # Image URI is rewritten by scripts/deploy.sh from your AWS_ACCOUNT_ID + AWS_REGION.
+          # Do NOT commit a real account ID here.
+          image: PLACEHOLDER_AWS_ACCOUNT_ID.dkr.ecr.PLACEHOLDER_REGION.amazonaws.com/vllm-gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          # All non-secret config comes from the gateway-config ConfigMap.
+          # Adding a new RAG_* knob there auto-propagates here -- no edit
+          # to this file required.
+          envFrom:
+            - configMapRef:
+                name: gateway-config
+          env:
+            # API key (Secret, same key as vLLM for consistency)
+            - name: VLLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vllm-secrets
+                  key: VLLM_API_KEY
+                  optional: false
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: vllm-secrets
+                  key: OPENAI_API_KEY
+                  optional: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          # Liveness probe - process up only (no dependency checks)
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # Readiness probe - vLLM, DynamoDB, OpenSearch (when RAG on)
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Startup probe - cheap check while models and clients initialize
+          startupProbe:
+            httpGet:
+              path: /live
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 10
+      
+      # Schedule on CPU nodes (no GPU needed for gateway)
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: "node.kubernetes.io/instance-type"
+                    operator: NotIn
+                    values:
+                      # Avoid GPU instances for cost efficiency
+                      - p4d.24xlarge
+                      - p3.2xlarge
+                      - g5.xlarge
+                      - g5.2xlarge
+        # Spread replicas across nodes for HA
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - gateway
+                topologyKey: kubernetes.io/hostname
