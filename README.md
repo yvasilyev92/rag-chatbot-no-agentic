@@ -1,8 +1,8 @@
-# vLLM on AWS EKS with Conversation Memory and RAG
+# RAG Chatbot on Amazon EKS
 
-Deploy HuggingFace LLMs with vLLM on AWS EKS. A FastAPI gateway adds DynamoDB sessions and an OpenSearch RAG knowledge base.
+Chat with your own documents, served by a Hugging Face model on GPU. vLLM runs inference on Amazon EKS; a FastAPI gateway adds session memory (DynamoDB) and hybrid RAG over OpenSearch.
 
-Put knowledge-base files (markdown, PDF, TXT, CSV) in the repo-root [`docs/`](docs/) directory, set `DESIRED_RAG_TOPIC` to match, then index with `./scripts/upload-docs.sh`.
+Drop markdown, PDF, TXT, or CSV files into [`docs/`](docs/), set `DESIRED_RAG_TOPIC` to match the corpus, then run `./scripts/upload-docs.sh` to index.
 
 ## Stack
 
