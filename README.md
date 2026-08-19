@@ -146,7 +146,3 @@ Plus EKS (~$0.10/hr), DynamoDB on-demand, OpenSearch (~$26/month for t3.small.se
 ```
 
 Interactive. Optionally keeps DynamoDB / OpenSearch / ECR / IAM. Do not `kubectl delete -f kubernetes/` — those manifests still have `PLACEHOLDER_*` URIs.
-
-## License
-
-Provided as-is for educational use. Deployed models have their own licenses (e.g. Qwen2.5 is Apache 2.0).
