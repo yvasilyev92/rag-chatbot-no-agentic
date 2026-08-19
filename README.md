@@ -4,6 +4,17 @@ Deploy HuggingFace LLMs with vLLM on AWS EKS. A FastAPI gateway adds DynamoDB se
 
 Put knowledge-base files (markdown, PDF, TXT, CSV) in the repo-root [`docs/`](docs/) directory, set `DESIRED_RAG_TOPIC` to match, then index with `./scripts/upload-docs.sh`.
 
+## Stack
+
+- **Orchestration:** Kubernetes on Amazon EKS, Docker, Amazon ECR
+- **Compute:** CPU + GPU node groups (default `g5.xlarge` / NVIDIA A10G)
+- **Networking / IAM:** Network Load Balancer (TLS via ACM), AWS Load Balancer Controller, IRSA
+- **Inference:** vLLM, Hugging Face Hub
+- **Gateway:** FastAPI, Uvicorn, Pydantic
+- **Data:** Amazon DynamoDB (sessions + document metadata), Amazon OpenSearch (Faiss kNN + BM25)
+- **RAG models:** fastembed — `BAAI/bge-small-en-v1.5` embedder, `Xenova/ms-marco-MiniLM-L-6-v2` reranker
+- **Optional:** OpenAI gpt-4o-mini + LangChain (input guard and query rewrite)
+
 **Docs**
 
 - [QUICKSTART.md](QUICKSTART.md) — deploy from scratch
@@ -16,31 +27,29 @@ Put knowledge-base files (markdown, PDF, TXT, CSV) in the repo-root [`docs/`](do
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                            AWS Cloud                                  │
-│                                                                       │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                         EKS Cluster                              │ │
-│  │                                                                   │ │
-│  │  ┌─────────────────────┐      ┌─────────────────────────────┐   │ │
-│  │  │   CPU Node Group    │      │      GPU Node Group         │   │ │
-│  │  │  ┌───────────────┐  │      │  ┌─────────────────────┐   │   │ │
-│  │  │  │ API Gateway   │  │      │  │    vLLM Server      │   │   │ │
-│  │  │  │ (FastAPI)     │──┼──────┼──│    (with GPU)       │   │   │ │
-│  │  │  │ x2 replicas   │  │      │  │                     │   │   │ │
-│  │  │  └───────────────┘  │      │  └─────────────────────┘   │   │ │
-│  │  └─────────────────────┘      └─────────────────────────────┘   │ │
-│  │            │                                                      │ │
-│  │      LoadBalancer (NLB, TLS on 443)                              │ │
-│  └─────────────────────────────────────────────────────────────────┘ │
-│            │                        │                                 │
-│  ┌─────────────────┐    ┌───────────────────┐    ┌───────────────┐  │
-│  │    DynamoDB     │    │    OpenSearch     │    │  HuggingFace  │  │
-│  │ (conversations  │    │  (RAG vectors +   │    │     Hub       │  │
-│  │  + documents)   │    │   BM25 text)      │    │               │  │
-│  └─────────────────┘    └───────────────────┘    └───────────────┘  │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph aws["AWS Cloud"]
+        subgraph eks["EKS Cluster"]
+            nlb["LoadBalancer<br/>NLB, TLS on 443"]
+            subgraph cpu["CPU Node Group"]
+                gw["API Gateway<br/>FastAPI · x2 replicas"]
+            end
+            subgraph gpu["GPU Node Group"]
+                vllm["vLLM Server<br/>(GPU)"]
+            end
+            nlb --> gw
+            gw --> vllm
+        end
+
+        ddb["DynamoDB<br/>conversations + documents"]
+        os["OpenSearch<br/>RAG vectors + BM25"]
+        hf["HuggingFace Hub"]
+
+        gw --> ddb
+        gw --> os
+        vllm -.-> hf
+    end
 ```
 
 Gateway pods use **IRSA** (no static AWS keys). vLLM is ClusterIP-only. Retrieval embed/rerank is local `fastembed`.
